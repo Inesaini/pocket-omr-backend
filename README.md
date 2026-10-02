@@ -269,7 +269,11 @@ The system has three parts:
 
 ### My contribution
 
-<!-- TODO(Ines): replace with your own words before publishing -->
-I worked on this backend: the exam and submission API used by the mobile app, the
-integration of the recognition models into the grading service, sheet storage, and the
-review-flag and regrade flow.
+I built this entire backend: the REST API, the data model and migrations, authentication,
+exam and submission management, sheet storage, PDF generation, and the grading service that
+runs the recognition models on uploaded sheets. I also added the student list feature, which
+imports a class roster from Excel or CSV and matches each graded sheet to a student.
+
+Beyond this repository, I built the whole
+[mobile app](https://github.com/Inesaini/pocket-omr-mobile) and improved the web frontend,
+connecting it to this API.
