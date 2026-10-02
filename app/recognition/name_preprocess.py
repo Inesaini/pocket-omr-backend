@@ -67,6 +67,39 @@ def _find_boxes_in_grid(grid, aspect_lo=0.4, aspect_hi=2.5, min_side=5):
     return boxes
 
 
+def _find_cells_via_holes(grid):
+    """Detect character cells as the *holes* enclosed by the grid lines.
+
+    ``_find_boxes_in_grid`` uses ``RETR_EXTERNAL`` on the grid lines, which only
+    recovers cells that are visually ISOLATED (separated by whitespace). The app
+    prints each field's cells as one CONNECTED table (adjacent cells share
+    borders), so the external contour is the whole row and individual cells are
+    lost. The cells are the *inner* contours (holes) of that connected grid, so
+    recover them with ``RETR_CCOMP`` and keep the child contours.
+    """
+    cnts, hier = cv2.findContours(grid, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hier is None:
+        return []
+    hier = hier[0]
+    cells = [
+        cv2.boundingRect(c)
+        for i, c in enumerate(cnts)
+        if hier[i][3] != -1  # has a parent => it is a hole (a cell interior)
+    ]
+    cells = [(x, y, w, h) for (x, y, w, h) in cells if w >= 8 and h >= 8]
+    if not cells:
+        return []
+    median_w = np.median([w for (_, _, w, _) in cells])
+    median_h = np.median([h for (_, _, _, h) in cells])
+    return [
+        (x, y, w, h)
+        for (x, y, w, h) in cells
+        if 0.5 * median_w <= w <= 1.6 * median_w
+        and 0.5 * median_h <= h <= 1.6 * median_h
+        and 0.4 <= w / float(h) <= 2.6
+    ]
+
+
 def detect_boxes(personal_img_bgr, personal_img_bw=None):
     """Detect the handwriting cells in a personal-info crop.
 
@@ -86,6 +119,13 @@ def detect_boxes(personal_img_bgr, personal_img_bw=None):
     )
     grid, horiz, vert = _extract_grid_from_thresh(thresh)
     boxes = _find_boxes_in_grid(grid)
+
+    # Connected-table layout: the line-based (RETR_EXTERNAL) pass only finds
+    # isolated cells. When the sheet draws cells as a connected grid it returns
+    # almost nothing, so recover the cells from the grid holes instead.
+    hole_boxes = _find_cells_via_holes(grid)
+    if len(hole_boxes) > len(boxes):
+        boxes = hole_boxes
 
     if len(boxes) == 0 and personal_img_bw is not None:
         bw_inv = cv2.bitwise_not(personal_img_bw)

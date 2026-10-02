@@ -384,9 +384,15 @@ def resolve_orientation(page):
     (1,2,3) must sit in the TOP half. That resolves the 0-vs-180 ambiguity
     without the unreliable L-marker extent heuristic.
     """
-    # --- primary: QR ---
+    # --- primary: QR, but ONLY when it actually DECODES ---
+    # detect_qr can lock onto a finder-pattern-like blob (a shadow, a legend
+    # box, a reflection) and return its centre without decoding anything
+    # (data == ""). Trusting that centre has mis-rotated valid sheets by 90 deg
+    # (name boxes come out vertical, the answer grid is misaligned). A decoded
+    # QR is trustworthy; a located-but-undecoded one is not, so fall through to
+    # the marker layout (and use the QR centre only as a last resort below).
     data, c = detect_qr(page)
-    if c is not None:
+    if c is not None and data:
         cx, cy = c
         right, bottom = cx > 0.5, cy > 0.5
         if right and bottom:
@@ -417,6 +423,19 @@ def resolve_orientation(page):
         if score > best_score:
             best_score = score
             best = (rp, k, "markers", None)
+
+    # Last resort: markers gave us nothing, but we did *locate* a QR-like blob.
+    # Use its quadrant rather than blindly leaving the page as-is.
+    if best_score == -1e9 and c is not None:
+        cx, cy = c
+        right, bottom = cx > 0.5, cy > 0.5
+        if right and bottom:
+            return page, 0, "qr_loc", data
+        if (not right) and bottom:
+            return _rot(page, 90), 90, "qr_loc", data
+        if (not right) and (not bottom):
+            return _rot(page, 180), 180, "qr_loc", data
+        return _rot(page, 270), 270, "qr_loc", data
     return best
 
 

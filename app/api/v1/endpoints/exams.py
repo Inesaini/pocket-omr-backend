@@ -147,6 +147,20 @@ async def export_results(exam_id: uuid.UUID, deps: tuple = Depends(_get_current_
     )
 
 
+@router.delete("/{exam_id}/submissions/{submission_id}", response_model=MobileExamOut)
+async def delete_submission(
+    exam_id: uuid.UUID,
+    submission_id: uuid.UUID,
+    deps: tuple = Depends(_get_current_user_id),
+):
+    """Delete a single graded paper (submission) and return the updated results."""
+    user_id, db = deps
+    try:
+        return await ExamService.delete_submission(db, exam_id, submission_id, user_id)
+    except ServiceError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
 @router.post("/{exam_id}/regrade", response_model=MobileExamOut)
 async def regrade(exam_id: uuid.UUID, deps: tuple = Depends(_get_current_user_id)):
     """Re-run grading on all pending submissions (e.g. after the OMR model is wired in)."""

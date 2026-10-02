@@ -165,10 +165,18 @@ def _get_recognition():
     return _reco
 
 
-def _match_student(predicted: dict, students) -> "object | None":
+# Weighted-Levenshtein distance (0 = identical, 1 = totally different) above
+# which the recognised name is considered to match NO roster student. A correct
+# match scores near 0 (and well under ~0.3 even with a few mis-read characters);
+# a sheet whose student isn't on the roster scores ~0.6+. Beyond this we keep the
+# recognised name instead of misattributing the sheet to the nearest student.
+NAME_MATCH_MAX_DISTANCE = 0.45
+
+
+def _match_student(predicted: dict, students) -> "tuple[object | None, float]":
     """Fuzzy-match recognised name fields against the EXAM's student roster
-    (the Excel the teacher uploaded at exam creation). Returns the best
-    ExamStudent or None."""
+    (the Excel the teacher uploaded at exam creation). Returns
+    ``(best ExamStudent | None, distance)`` — lower distance = better match."""
     from app.recognition.fuzzy_match import _norm_name, match
 
     catalogue = [
@@ -182,14 +190,22 @@ def _match_student(predicted: dict, students) -> "object | None":
         for s in students
     ]
     if not catalogue:
-        return None
+        return None, 1.0
     hits = match(predicted, catalogue, top_k=1)
-    return hits[0][1]["_student"] if hits else None
+    if not hits:
+        return None, 1.0
+    score, rec = hits[0]
+    return rec["_student"], float(score)
 
 
 def _identify_student(seg: dict, exam: Exam, result: GradingResult) -> None:
     """Recognise the handwritten name and match it to an exam student; write the
-    identity onto `result`. Best-effort — silently skips if unavailable."""
+    identity onto `result`. Best-effort — silently skips if unavailable.
+
+    If the recognised name doesn't confidently match any roster student (the
+    student isn't on this exam's list, or the photo is unreadable), keep the
+    recognised name rather than misattributing the sheet to the nearest student,
+    and flag it for review so the teacher can assign it manually."""
     students = getattr(exam, "students", None) or []
     if not students or seg.get("personal_info") is None:
         return
@@ -200,14 +216,20 @@ def _identify_student(seg: dict, exam: Exam, result: GradingResult) -> None:
         from app.services.name_recognition import _recognize_personal_info
 
         predicted = _recognize_personal_info(reco, seg["personal_info"])
-        matched = _match_student(predicted, students)
+        matched, distance = _match_student(predicted, students)
     except Exception as e:  # recognition/matching must never fail grading
         logger.warning("Name identification failed: %s", e)
         return
-    if matched is not None:
+    if matched is not None and distance <= NAME_MATCH_MAX_DISTANCE:
         result.first_name = matched.first_name or ""
         result.last_name = matched.last_name or ""
         result.student_id = str(matched.registration_number or "")
+    else:
+        # No confident roster match — surface the recognised name, flag for review.
+        result.first_name = (predicted.get("first_name") or "").title()
+        result.last_name = (predicted.get("last_name") or "").title()
+        result.student_id = predicted.get("registration_number") or ""
+        result.needs_review = True
 
 
 def grade_sheet(image_bytes: bytes, exam: Exam) -> GradingResult:

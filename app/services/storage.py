@@ -52,6 +52,10 @@ def _get_sync(key: str) -> bytes:
         resp.release_conn()
 
 
+def _delete_sync(key: str) -> None:
+    _client().remove_object(settings.minio_bucket, key)
+
+
 def _presigned_sync(key: str, expires_seconds: int) -> str:
     return _client().presigned_get_object(
         settings.minio_bucket, key, expires=timedelta(seconds=expires_seconds)
@@ -68,6 +72,14 @@ async def put_object(
 async def get_object(key: str) -> bytes:
     """Fetch the object bytes stored under `key`."""
     return await asyncio.to_thread(_get_sync, key)
+
+
+async def delete_object(key: str) -> None:
+    """Remove the object stored under `key` (best-effort; ignores missing)."""
+    try:
+        await asyncio.to_thread(_delete_sync, key)
+    except Exception:
+        pass
 
 
 async def presigned_url(key: str, expires_seconds: int = 3600) -> str:

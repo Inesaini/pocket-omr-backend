@@ -25,6 +25,16 @@ import torch
 
 BUBBLE_SIZE = 64
 
+# Ink safety net thresholds (interior-vs-border contrast, 0-255). An EMPTY bubble
+# reads negative (its interior is lighter than the printed ring around it); any
+# real mark reads positive — a dark pen fill +60..+110, a faint PENCIL fill only
+# +13..+40. A bubble is taken as a CNN-missed answer when its contrast clears the
+# small positive INK_FILL_MIN floor (so blank questions, which stay negative, are
+# never rescued) *and* beats the next-darkest bubble in the same question by
+# INK_MARGIN (so an ambiguous double-mark is left unanswered/flagged, not picked).
+INK_FILL_MIN = 8.0
+INK_MARGIN = 22.0
+
 
 # ---------------------------------------------------------------------------
 # Geometry helpers (from the notebook)
@@ -70,40 +80,76 @@ def assign_grid(bubbles, num_questions, num_choices):
     tol_y = max(r_med * 0.8, gap_y * 0.4)
     tol_x = max(r_med * 0.8, gap_x * 0.4)
 
-    row_centers = cluster(ys, tol_y)
     col_centers = cluster(xs, tol_x)
-
-    n_rows = len(row_centers)
     n_cols = len(col_centers)
     n_col_blocks = max(1, round(n_cols / num_choices)) if num_choices else 1
-    n_row_blocks = max(1, round(n_rows / num_questions)) if num_questions else 1
 
-    grid = {}
-    for b in bubbles:
-        cx, cy = b[0], b[1]
-        row_idx = int(np.argmin([abs(cy - r) for r in row_centers]))
-        col_idx = int(np.argmin([abs(cx - c) for c in col_centers]))
+    def assign_block(members, q_offset, rows_in_block, out):
+        """Lay one column-block's bubbles into a (question, choice) grid.
 
-        if n_col_blocks > 1:
-            cols_per_block = max(1, n_cols // n_col_blocks)
-            block_col = col_idx // cols_per_block
-            local_col = col_idx % cols_per_block
-            rows_per_block = max(1, n_rows // n_row_blocks)
-            q = block_col * rows_per_block + row_idx + 1
-            c = local_col + 1
-        elif n_row_blocks > 1:
-            rows_per_block = max(1, n_rows // n_row_blocks)
-            block_row = row_idx // rows_per_block
-            local_row = row_idx % rows_per_block
-            q = local_row + 1
-            c = block_row * (n_cols // max(1, n_row_blocks)) + col_idx + 1
-        else:
-            q = row_idx + 1
-            c = col_idx + 1
+        Rows are grouped by y; within each row the choice is the bubble's RANK
+        left-to-right (choice 1 = leftmost). Ranking per row is immune to the
+        row-to-row x-shift that rotation/perspective introduces (which breaks
+        global column clustering), and to a column being undetected in some rows.
+        """
+        if not members:
+            return
+        row_centers = cluster(sorted(b[1] for b in members), tol_y)
+        buckets: dict[int, list] = {i: [] for i in range(len(row_centers))}
+        for b in members:
+            ri = int(np.argmin([abs(b[1] - r) for r in row_centers]))
+            buckets[ri].append(b)
+        # A stray detection (e.g. a speck above the grid) forms a phantom row that
+        # would shift every question down. We know how many rows the block should
+        # have, so when there are extras keep only the densest `rows_in_block`
+        # (real rows hold ~num_choices bubbles; phantom rows hold 1-2).
+        keep_idx = list(range(len(row_centers)))
+        if rows_in_block and len(keep_idx) > rows_in_block:
+            keep_idx = sorted(keep_idx, key=lambda i: len(buckets[i]), reverse=True)
+            keep_idx = keep_idx[:rows_in_block]
+        keep_idx = sorted(keep_idx, key=lambda i: row_centers[i])  # top-to-bottom
+        for new_ri, i in enumerate(keep_idx):
+            q = q_offset + new_ri + 1
+            if not (1 <= q <= num_questions):
+                continue
+            row = buckets[i]
+            # A row should have at most `num_choices` bubbles; if YOLO threw in a
+            # spurious extra it would shift every choice's rank, so drop the
+            # lowest-confidence detections down to num_choices first.
+            if len(row) > num_choices:
+                row = sorted(row, key=lambda z: z[7], reverse=True)[:num_choices]
+            for ci, b in enumerate(sorted(row, key=lambda z: z[0])):
+                c = ci + 1
+                if 1 <= c <= num_choices and (q, c) not in out:
+                    out[(q, c)] = b
 
-        if 1 <= q <= num_questions and 1 <= c <= num_choices and (q, c) not in grid:
-            grid[(q, c)] = b
+    grid: dict = {}
 
+    # Side-by-side column blocks (e.g. the "Double Column" layout: Q1-3 left,
+    # Q4-6 right). Split the bubbles into blocks at the widest x-gaps, then lay
+    # out each block independently.
+    if n_col_blocks > 1 and n_cols >= 2:
+        cc = sorted(col_centers)
+        gap_order = sorted(
+            range(len(cc) - 1), key=lambda i: cc[i + 1] - cc[i], reverse=True
+        )
+        boundaries = sorted(cc[i + 1] for i in gap_order[: n_col_blocks - 1])
+
+        def _block_of(cx, _bnds=boundaries):
+            return sum(1 for bnd in _bnds if cx >= bnd)
+
+        # Columns are filled top-to-bottom, left-to-right with ceil(n/blocks)
+        # rows in the earlier columns (matches the web sheet's GridSheet layout).
+        # Using round() here mis-split odd counts: a 5-question/2-column sheet
+        # (3 left + 2 right) became 2+2, dropping Q3 and shifting the right column.
+        rows_per_block = max(1, -(-num_questions // n_col_blocks))  # ceil
+        for blk in range(n_col_blocks):
+            members = [b for b in bubbles if _block_of(b[0]) == blk]
+            assign_block(members, blk * rows_per_block, rows_per_block, grid)
+        return grid
+
+    # Single block: all questions stacked in one column of rows.
+    assign_block(bubbles, 0, num_questions, grid)
     return grid
 
 
@@ -192,6 +238,32 @@ class BubbleGrader:
         logits = self.cnn(tensor).reshape(-1)
         return torch.sigmoid(logits).cpu().numpy()
 
+    @staticmethod
+    def _bubble_ink(img_gray: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> float:
+        """Fill signal for a bubble: how much darker its interior is than its own
+        border ring (higher => more ink). Deterministic safety net for when the
+        CNN misses a faint / coloured-pen fill.
+
+        Using the *local* contrast (border minus interior of the same bubble)
+        instead of an absolute intensity makes it robust to shadows and uneven
+        lighting: a shadow darkens a bubble and its surroundings equally, so an
+        empty bubble stays ~0 while any real mark stands out (typically +60..+110
+        vs <=0 for empties on these sheets).
+        """
+        h, w = img_gray[max(0, y1):y2, max(0, x1):x2].shape[:2]
+        if h < 4 or w < 4:
+            return 0.0
+        box = img_gray[max(0, y1):y2, max(0, x1):x2].astype(np.float32)
+        oy, ox = int(h * 0.30), int(w * 0.30)
+        interior = box[oy:h - oy, ox:w - ox]
+        if interior.size == 0:
+            return 0.0
+        mask = np.ones(box.shape, dtype=bool)
+        mask[oy:h - oy, ox:w - ox] = False
+        border = box[mask]
+        border_mean = float(border.mean()) if border.size else float(interior.mean())
+        return border_mean - float(interior.mean())
+
     def grade(self, answers_bgr, num_questions, num_choices, classify_bgr=None) -> SheetAnswers:
         """Grade one answers region.
 
@@ -211,6 +283,19 @@ class BubbleGrader:
         # Too many detections => NMS too loose; retighten (notebook heuristic).
         if expected and len(bubbles) > expected * 3:
             bubbles = self._detect(answers_bgr, max(self.conf, 0.70))
+        # Too few => faint/printed-light bubbles were missed (common on sparse
+        # sheets, e.g. a 6-question double-column page). Progressively lower the
+        # confidence to recover them, stopping once we have the full grid and
+        # without ballooning into false positives.
+        elif expected and len(bubbles) < expected:
+            for lc in (0.20, 0.12, 0.08):
+                if lc >= self.conf:
+                    continue
+                more = self._detect(answers_bgr, lc)
+                if len(more) > len(bubbles) and len(more) <= expected * 2:
+                    bubbles = more
+                if len(bubbles) >= expected:
+                    break
 
         grid = assign_grid(bubbles, num_questions, num_choices)
 
@@ -230,6 +315,12 @@ class BubbleGrader:
             )
 
         probs = self._classify(crops)
+        # Per-bubble ink (mean interior intensity) for the safety net below.
+        ink_by_q: dict[int, dict[int, float]] = {
+            q: {} for q in range(1, num_questions + 1)
+        }
+        for (q, c) in keys:
+            ink_by_q[q][c] = self._bubble_ink(img_gray, *grid[(q, c)][3:7])
 
         # Per question: collect filled choices and the decision confidence of
         # each bubble (max(p, 1-p) — how sure the model is either way).
@@ -243,6 +334,23 @@ class BubbleGrader:
             if p > 0.5:
                 filled_by_q[q].append(c)
 
+        # Ink safety net: bubbles filled lightly / in coloured pen come out below
+        # the CNN's "filled" threshold, so a clearly-inked answer reads as blank.
+        # When the CNN flagged NO choice for a question but one bubble is plainly
+        # darker than its peers, take it as the answer (and flag for review).
+        ink_rescued: set[int] = set()
+        for q in range(1, num_questions + 1):
+            if filled_by_q[q]:
+                continue
+            inks = ink_by_q[q]
+            if len(inks) < 2:
+                continue
+            best_c = max(inks, key=inks.get)  # highest contrast => most inked
+            runner = max((v for c, v in inks.items() if c != best_c), default=0.0)
+            if inks[best_c] >= INK_FILL_MIN and inks[best_c] - runner >= INK_MARGIN:
+                filled_by_q[q].append(best_c)
+                ink_rescued.add(q)
+
         flagged: list[int] = []
         for q in range(1, num_questions + 1):
             choices = filled_by_q[q]
@@ -254,12 +362,14 @@ class BubbleGrader:
             # Weakest bubble decision drives the question's confidence.
             weakest = min(decisions) if decisions else 0.0
             q_conf[q - 1] = round(weakest * 100, 1)
-            # Flag if the model was unsure of a bubble, a bubble is missing, or
-            # the student double-marked (more than one filled).
+            # Flag if the model was unsure of a bubble, a bubble is missing, the
+            # student double-marked (more than one filled), or the answer was
+            # recovered by the ink safety net (the CNN had missed it).
             if (
                 not decisions
                 or weakest < self.review_threshold
                 or len(choices) > 1
+                or q in ink_rescued
             ):
                 flagged.append(q)
 

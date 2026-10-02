@@ -418,6 +418,31 @@ class ExamService:
         )
 
     @staticmethod
+    async def delete_submission(
+        db: AsyncSession,
+        exam_id: uuid.UUID,
+        submission_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> MobileExamOut:
+        """Delete a single graded/pending paper, drop its stored image, and
+        refresh the exam aggregates. Returns the updated mobile view."""
+        exam = await ExamService._load_for_grading(db, exam_id, user_id)
+        submission = next(
+            (s for s in exam.submissions if s.id == submission_id), None
+        )
+        if submission is None:
+            raise ServiceError("Submission not found")
+
+        if submission.sheet_image_path:
+            await storage.delete_object(submission.sheet_image_path)
+        exam.submissions.remove(submission)
+        await db.delete(submission)
+
+        _recompute_aggregates(exam)
+        await db.commit()
+        return await ExamService.get_mobile(db, exam_id, user_id)
+
+    @staticmethod
     async def regrade_pending(
         db: AsyncSession, exam_id: uuid.UUID, user_id: uuid.UUID
     ) -> MobileExamOut:
@@ -585,6 +610,7 @@ def _recompute_aggregates(exam: Exam) -> None:
 def _exam_to_mobile(exam: Exam) -> MobileExamOut:
     students_out = [
         StudentResultOut(
+            id=s.id,
             firstName=s.first_name,
             lastName=s.last_name,
             studentId=s.student_id,

@@ -106,6 +106,8 @@ class ExamOut(APIModel):
 
 
 class StudentResultOut(APIModel):
+    # Submission id — used by clients to delete an individual graded paper.
+    id: uuid.UUID
     firstName: str
     lastName: str
     studentId: str

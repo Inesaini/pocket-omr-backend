@@ -59,7 +59,9 @@ class Exam(Base):
         back_populates="exam", cascade="all, delete-orphan"
     )
     submissions: Mapped[list["StudentSubmission"]] = relationship(
-        back_populates="exam", cascade="all, delete-orphan"
+        back_populates="exam",
+        cascade="all, delete-orphan",
+        order_by="StudentSubmission.created_at",
     )
 
 
