@@ -274,6 +274,9 @@ exam and submission management, sheet storage, PDF generation, and the grading s
 runs the recognition models on uploaded sheets. I also added the student list feature, which
 imports a class roster from Excel or CSV and matches each graded sheet to a student.
 
+On the machine-learning side, I contributed to the handwritten name recognition model and
+to the sheet segmentation pipeline, both of which this backend runs in production.
+
 Beyond this repository, I built the whole
 [mobile app](https://github.com/Inesaini/pocket-omr-mobile) and improved the web frontend,
 connecting it to this API.
