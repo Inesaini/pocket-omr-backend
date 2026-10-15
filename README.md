@@ -1,31 +1,50 @@
-# Pocket OMR — Backend
+# Pocket OMR: Backend
 
-Backend of **Pocket OMR**, an end-to-end Optical Mark Recognition system that grades
-multiple-choice exam sheets photographed with an ordinary smartphone. No scanner and no
-dedicated hardware: a teacher creates an exam, prints the answer sheets, photographs the
-filled sheets, and gets every student's grade back automatically.
+**Grade multiple-choice exams from smartphone photos. A teacher photographs the filled answer sheets, and the system identifies each student from their handwritten name, reads the bubbles and returns the grades. No scanner needed.**
 
-This service is the core of the system. It exposes the REST API used by the React web app
-and the Flutter mobile app, generates the printable sheets, stores the scans, and runs the
-computer-vision pipeline that reads both the **answer bubbles** and the **handwritten
-student name** on each sheet.
+This is the core service of Pocket OMR: the REST API used by the React web app and the [Flutter mobile app](https://github.com/Inesaini/pocket-omr-mobile), printable sheet generation, scan storage, and the computer-vision pipeline that grades each sheet.
 
 ![System architecture](_docimg/architecture.png)
 
+## Highlights
+
+- **Computer vision in production:** page detection and perspective correction, a YOLOv8 bubble detector, a CNN bubble classifier, and a MobileNetV3 handwriting recognizer, all run behind an API.
+- **Reliable by design:** unsure or double-marked answers are flagged for the teacher instead of being graded silently, and failed sheets stay pending so they can be regraded.
+- **Fully async FastAPI** on PostgreSQL (SQLAlchemy 2.0 + Alembic), with MinIO object storage, JWT authentication with refresh-token rotation, and Docker Compose.
+- **Tested:** 52 pytest tests covering authentication, exams, PDF generation and bubble grading; linted with Ruff.
+
+**Stack:** Python 3.12 · FastAPI · PostgreSQL · SQLAlchemy · Alembic · PyTorch · YOLOv8 · OpenCV · MinIO · ReportLab · Docker
+
+## My contribution
+
+I built this entire backend: the REST API, the data model and migrations, authentication,
+exam and submission management, sheet storage, PDF generation, and the grading service that
+runs the recognition models on uploaded sheets. I also added the student list feature, which
+imports a class roster from Excel or CSV and matches each graded sheet to a student.
+
+On the machine-learning side, I contributed to the handwritten name recognition model and
+to the sheet segmentation pipeline, both of which this backend runs in production.
+
+Beyond this repository, I built the whole
+[mobile app](https://github.com/Inesaini/pocket-omr-mobile) and improved the web frontend:
+I connected it to this API, added the student list to the exam setup (manual entry and
+import from Excel or CSV), reworked the grid and correction sheets, and added the export of
+student grades to Excel.
+
 ## What it does
 
-- **Exam management** — teachers create exams with questions, answer keys and per-question
+- **Exam management:** teachers create exams with questions, answer keys and per-question
   points, and import the class roster from `.xlsx` / `.xls` / `.csv`.
-- **Sheet generation** — produces printable PDF question sheets, answer grids and correction
+- **Sheet generation:** produces printable PDF question sheets, answer grids and correction
   sheets, each carrying a QR code and alignment markers.
-- **Automatic grading** — a photographed sheet (or a `.zip` of a whole class) is segmented,
+- **Automatic grading:** a photographed sheet (or a `.zip` of a whole class) is segmented,
   the student is identified from their handwriting, the bubbles are read, and the score is
   computed against the answer key.
-- **Human review where it matters** — questions the model is unsure about, or that the
+- **Human review where it matters:** questions the model is unsure about, or that the
   student double-marked, are flagged for the teacher instead of being silently graded.
-- **Results** — per-student results, average score and confidence per exam, and export to
+- **Results:** per-student results, average score and confidence per exam, and export to
   Excel.
-- **Accounts** — JWT authentication with refresh-token rotation, logout revocation and
+- **Accounts:** JWT authentication with refresh-token rotation, logout revocation and
   password reset by email code.
 
 ## Grading pipeline
@@ -34,21 +53,21 @@ student name** on each sheet.
 
 For each uploaded sheet:
 
-1. **Precheck and store** — unreadable photos are rejected early; accepted images are saved
+1. **Precheck and store:** unreadable photos are rejected early; accepted images are saved
    to MinIO.
-2. **Segment** — the page is located, oriented using the QR code and margin markers, warped
+2. **Segment:** the page is located, oriented using the QR code and margin markers, warped
    to a canonical A4 canvas, cleaned of shadows, and cropped into a *personal info* region
    and an *answers* region (`app/recognition/sheet_pipeline_v11.py`).
-3. **Read the name** — character boxes are detected, each handwritten character is
+3. **Read the name:** character boxes are detected, each handwritten character is
    classified by a MobileNetV3 CNN, and field rules correct look-alikes (`O`/`0`, `I`/`1`,
    `S`/`5`).
-4. **Match the student** — the recognised name, group and registration number are
+4. **Match the student:** the recognised name, group and registration number are
    fuzzy-matched against the roster with a weighted Levenshtein distance.
-5. **Read the answers** — a YOLOv8 detector finds every bubble, the boxes are ordered into
+5. **Read the answers:** a YOLOv8 detector finds every bubble, the boxes are ordered into
    a question × choice grid, and a small CNN classifies each bubble as filled or empty.
-6. **Score** — a question is correct when exactly one bubble is filled and it matches the
+6. **Score:** a question is correct when exactly one bubble is filled and it matches the
    key. Low-confidence or double-marked questions are flagged for review.
-7. **Persist** — the result is saved as a `StudentSubmission` and the exam's totals are
+7. **Persist:** the result is saved as a `StudentSubmission` and the exam's totals are
    recomputed.
 
 If any step fails, the sheet is kept as **pending** and can be graded again later with the
@@ -58,40 +77,17 @@ regrade endpoint. More detail is in [GRADING.md](GRADING.md).
 |---|---|
 | ![Scoring](_docimg/scoring.png) | ![Auth flow](_docimg/auth.png) |
 
-## Tech stack
+## Run it
 
-- **Framework**: FastAPI (Python 3.12), fully async
-- **Database**: PostgreSQL 16, SQLAlchemy 2.0 (async) + asyncpg, Alembic migrations
-- **Auth**: JWT (python-jose) + bcrypt (passlib)
-- **Computer vision**: OpenCV, PyTorch (TorchScript models), Ultralytics YOLOv8
-- **Object storage**: MinIO (scanned answer sheets)
-- **PDF**: ReportLab
-- **Tooling**: Docker + Docker Compose, pytest, Ruff
-
-## Project structure
-
-![Layers](_docimg/layers.png)
-
-```
-app/
-├── api/v1/endpoints/   # REST endpoints: auth, exams, students, grading, pdf, health
-├── schemas/            # Pydantic request/response models
-├── services/           # Business logic: auth, exam, grading, roster, storage, pdf, email
-├── models/             # SQLAlchemy models: user, exam, questions, submissions
-├── recognition/        # OMR pipeline: segmentation, bubble grading, char model, fuzzy match
-├── core/               # Configuration and security (JWT)
-└── db/                 # Async session management
-recognition_models/     # Trained models: YOLOv8 bubble detector, bubble CNN, MobileNetV3
-alembic/                # Database migrations
-tests/                  # pytest suite
-scripts/                # Asset building, mock data seeding, documentation generator
+```bash
+cp .env.example .env              # defaults work for local development
+docker compose up -d              # PostgreSQL, MinIO and the API
 ```
 
-Data model:
+API docs: `http://localhost:8000/docs`.
 
-![ER diagram](_docimg/er.png)
-
-## Setup
+<details>
+<summary>Local development without Docker for the API</summary>
 
 ### 1. Environment
 
@@ -146,7 +142,10 @@ docker compose up -d
 
 This starts PostgreSQL, MinIO, and the API server.
 
-## Environment variables
+</details>
+
+<details>
+<summary>Environment variables</summary>
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -168,7 +167,10 @@ This starts PostgreSQL, MinIO, and the API server.
 Model paths and grading thresholds (`BUBBLE_YOLO_PATH`, `BUBBLE_CNN_PATH`,
 `BUBBLE_REVIEW_THRESHOLD`, …) are documented in [GRADING.md](GRADING.md).
 
-## API endpoints
+</details>
+
+<details>
+<summary>API endpoints</summary>
 
 ### Health
 - `GET /health` - Health check
@@ -185,7 +187,7 @@ Model paths and grading thresholds (`BUBBLE_YOLO_PATH`, `BUBBLE_CNN_PATH`,
 - `POST /verify-reset-code` - Verify a reset code
 - `POST /reset-password` - Reset password with a valid code
 
-### Exams (`/api/v1/exams`) — all Bearer token
+### Exams (`/api/v1/exams`), all Bearer token
 - `POST /` - Create exam
 - `GET /` - List user's exams
 - `GET /{id}` - Get exam
@@ -214,7 +216,38 @@ Model paths and grading thresholds (`BUBBLE_YOLO_PATH`, `BUBBLE_CNN_PATH`,
 ### PDF
 - `POST /generate-pdf` - Generate PDF sheet: `question_sheet` | `grid_sheet` | `correction_sheet` (no auth)
 
-## Migrations
+</details>
+
+<details>
+<summary>Project structure and data model</summary>
+
+![Layers](_docimg/layers.png)
+
+```
+app/
+├── api/v1/endpoints/   # REST endpoints: auth, exams, students, grading, pdf, health
+├── schemas/            # Pydantic request/response models
+├── services/           # Business logic: auth, exam, grading, roster, storage, pdf, email
+├── models/             # SQLAlchemy models: user, exam, questions, submissions
+├── recognition/        # OMR pipeline: segmentation, bubble grading, char model, fuzzy match
+├── core/               # Configuration and security (JWT)
+└── db/                 # Async session management
+recognition_models/     # Trained models: YOLOv8 bubble detector, bubble CNN, MobileNetV3
+alembic/                # Database migrations
+tests/                  # pytest suite
+scripts/                # Asset building, mock data seeding, documentation generator
+```
+
+Data model:
+
+![ER diagram](_docimg/er.png)
+
+</details>
+
+<details>
+<summary>Migrations, tests and linting</summary>
+
+### Migrations
 
 ```bash
 # Create a new migration
@@ -230,7 +263,7 @@ PYTHONPATH=. alembic downgrade -1
 PYTHONPATH=. alembic current
 ```
 
-## Tests
+### Tests
 
 Requires a running PostgreSQL instance.
 
@@ -245,13 +278,15 @@ PYTHONPATH=. pytest tests/test_auth.py -v
 PYTHONPATH=. pytest tests/test_auth.py::test_login_success -v
 ```
 
-## Linting
+### Linting
 
 ```bash
 ruff check app/ tests/
 ruff check --fix app/ tests/
 ruff format app/ tests/
 ```
+
+</details>
 
 ## About the project
 
@@ -263,22 +298,6 @@ on that data.
 
 The system has three parts:
 
-- **Backend** (this repository) — API, sheet generation and the grading pipeline
-- **Web app** — React + Vite, for teachers to create exams, print sheets and export grades
-- **Mobile app** — Flutter, for capturing sheets on site and reviewing results
-
-### My contribution
-
-I built this entire backend: the REST API, the data model and migrations, authentication,
-exam and submission management, sheet storage, PDF generation, and the grading service that
-runs the recognition models on uploaded sheets. I also added the student list feature, which
-imports a class roster from Excel or CSV and matches each graded sheet to a student.
-
-On the machine-learning side, I contributed to the handwritten name recognition model and
-to the sheet segmentation pipeline, both of which this backend runs in production.
-
-Beyond this repository, I built the whole
-[mobile app](https://github.com/Inesaini/pocket-omr-mobile) and improved the web frontend:
-I connected it to this API, added the student list to the exam setup (manual entry and
-import from Excel or CSV), reworked the grid and correction sheets, and added the export of
-student grades to Excel.
+- **Backend** (this repository): API, sheet generation and the grading pipeline
+- **Web app:** React + Vite, for teachers to create exams, print sheets and export grades
+- **Mobile app:** Flutter, for capturing sheets on site and reviewing results
