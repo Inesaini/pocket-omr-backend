@@ -47,6 +47,18 @@ student grades to Excel.
 - **Accounts:** JWT authentication with refresh-token rotation, logout revocation and
   password reset by email code.
 
+## Web app screenshots
+
+The React web app that teachers use to build exams and print sheets, backed by this API.
+
+| Exam list | Create an exam |
+| :---: | :---: |
+| ![Exam list](_docimg/web/exam-list.png) | ![Create an exam](_docimg/web/create-exam.png) |
+| **Questions and answer key** | **Question sheet** |
+| ![Questions](_docimg/web/questions.png) | ![Question sheet](_docimg/web/question-sheet.png) |
+| **Answer grid sheet** | **Correction sheet** |
+| ![Grid sheet](_docimg/web/grid-sheet.png) | ![Correction sheet](_docimg/web/correction-sheet.png) |
+
 ## Grading pipeline
 
 ![Grading pipeline](_docimg/pipeline.png)
